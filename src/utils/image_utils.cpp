@@ -1,146 +1,178 @@
-#include "utils/image_utils.h"
-#include <stdexcept>
-#include <algorithm>
-
-// For simplicity, using stb_image for image loading
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
-
-namespace cnn_cuda {
-
-Tensor ImageUtils::load_image(const std::string& file_path, int target_width, int target_height) {
-    int width, height, channels;
-    unsigned char* data = stbi_load(file_path.c_str(), &width, &height, &channels, 3);
-    
-    if (!data) {
-        throw std::runtime_error("Failed to load image: " + file_path);
-    }
-    
-    // Convert to float, scale to [0, 1], and change from HWC to CHW layout
-    std::vector<float> float_data(3 * width * height);
-    
-    for (int h = 0; h < height; ++h) {
-        for (int w = 0; w < width; ++w) {
-            for (int c = 0; c < 3; ++c) {
-                float_data[c * width * height + h * width + w] = 
-                    static_cast<float>(data[(h * width + w) * 3 + c]) / 255.0f;
-            }
-        }
-    }
-    
-    // Free stb_image data
-    stbi_image_free(data);
-    
-    // Create tensor on CPU
-    Tensor image({3, height, width}, float_data.data(), DeviceType::CPU);
-    
-    // Resize if needed
-    if (target_width > 0 && target_height > 0 && (width != target_width || height != target_height)) {
-        image = resize(image, target_width, target_height);
-    }
-    
-    // Move to GPU
-    image.to(DeviceType::CUDA);
-    
-    return image;
-}
-
-bool ImageUtils::save_image(const Tensor& tensor, const std::string& file_path) {
-    const auto& shape = tensor.shape();
+// Implement normalize method
+Tensor ImageUtils::normalize(const Tensor& image, const std::vector<float>& mean, const std::vector<float>& std) {
+    const auto& shape = image.shape();
     
     if (shape.size() != 3 || shape[0] != 3) {
-        throw std::runtime_error("Expected 3D tensor with 3 channels for image saving");
+        throw std::runtime_error("Expected 3D tensor with 3 channels for normalization");
     }
     
     int channels = shape[0];
     int height = shape[1];
     int width = shape[2];
     
-    // Create CPU tensor if needed
-    Tensor cpu_tensor = tensor;
-    if (tensor.device_type() == DeviceType::CUDA) {
-        cpu_tensor.to(DeviceType::CPU);
+    if (mean.size() != channels || std.size() != channels) {
+        throw std::runtime_error("Mean and std vectors must have same size as number of channels");
     }
     
-    // Convert from float [0, 1] to byte [0, 255] and from CHW to HWC
-    std::vector<unsigned char> byte_data(width * height * channels);
+    // Create a CPU tensor for the work
+    Tensor cpu_image = image;
+    if (image.device_type() == DeviceType::CUDA) {
+        cpu_image.to(DeviceType::CPU);
+    }
     
-    const float* float_data = cpu_tensor.data();
+    // Create output tensor on CPU
+    Tensor output(shape, nullptr, DeviceType::CPU);
     
-    for (int h = 0; h < height; ++h) {
-        for (int w = 0; w < width; ++w) {
-            for (int c = 0; c < channels; ++c) {
-                float val = float_data[c * width * height + h * width + w];
-                val = std::min(std::max(val, 0.0f), 1.0f); // Clamp to [0, 1]
-                byte_data[(h * width + w) * channels + c] = static_cast<unsigned char>(val * 255.0f);
+    const float* input_data = cpu_image.data();
+    float* output_data = output.data();
+    
+    // Normalize each channel
+    for (int c = 0; c < channels; ++c) {
+        for (int h = 0; h < height; ++h) {
+            for (int w = 0; w < width; ++w) {
+                int idx = c * height * width + h * width + w;
+                output_data[idx] = (input_data[idx] - mean[c]) / std[c];
             }
         }
     }
     
-    // Save image
-    int result = stbi_write_png(file_path.c_str(), width, height, channels, byte_data.data(), width * channels);
+    // Move result to match original device type
+    if (image.device_type() == DeviceType::CUDA) {
+        output.to(DeviceType::CUDA);
+    }
     
-    return result != 0;
+    return output;
 }
 
-Tensor ImageUtils::normalize(const Tensor& image, const std::vector<float>& mean, const std::vector<float>& std) {
-    // Implementation omitted for brevity
-    // This would involve a CUDA kernel to normalize each pixel
-    return image;
+// Simple bilinear interpolation for a single pixel and channel
+inline float bilinear_interpolate(
+    const float* data,
+    int height, int width,
+    float y, float x)
+{
+    // Get the 4 nearest pixels
+    int x1 = static_cast<int>(std::floor(x));
+    int y1 = static_cast<int>(std::floor(y));
+    int x2 = std::min(x1 + 1, width - 1);
+    int y2 = std::min(y1 + 1, height - 1);
+    
+    // Calculate interpolation weights
+    float wx = x - x1;
+    float wy = y - y1;
+    
+    // Perform bilinear interpolation
+    float val = (1.0f - wy) * (1.0f - wx) * data[y1 * width + x1] +
+                wy * (1.0f - wx) * data[y2 * width + x1] +
+                (1.0f - wy) * wx * data[y1 * width + x2] +
+                wy * wx * data[y2 * width + x2];
+    
+    return val;
 }
 
+// Implement resize method
 Tensor ImageUtils::resize(const Tensor& image, int target_width, int target_height) {
-    // Implementation omitted for brevity
-    // This would involve a CUDA kernel for resizing
-    return image;
-}
-
-Tensor ImageUtils::center_crop(const Tensor& image, int crop_width, int crop_height) {
-    // Implementation omitted for brevity
-    // This would involve a CUDA kernel or simple tensor slice operation
-    return image;
-}
-
-Tensor ImageUtils::batch_images(const std::vector<Tensor>& images) {
-    if (images.empty()) {
-        throw std::runtime_error("Cannot batch empty image list");
+    const auto& shape = image.shape();
+    
+    if (shape.size() != 3) {
+        throw std::runtime_error("Expected 3D tensor for resize");
     }
     
-    // Get shapes from first image
-    const auto& first_shape = images[0].shape();
+    int channels = shape[0];
+    int height = shape[1];
+    int width = shape[2];
     
-    if (first_shape.size() != 3) {
-        throw std::runtime_error("Expected 3D tensors for batching");
+    // Create a CPU tensor for the work
+    Tensor cpu_image = image;
+    if (image.device_type() == DeviceType::CUDA) {
+        cpu_image.to(DeviceType::CPU);
     }
     
-    int channels = first_shape[0];
-    int height = first_shape[1];
-    int width = first_shape[2];
-    int batch_size = images.size();
+    // Create output tensor on CPU
+    Tensor output({channels, target_height, target_width}, nullptr, DeviceType::CPU);
     
-    // Create output tensor
-    Tensor batch({batch_size, channels, height, width});
+    const float* input_data = cpu_image.data();
+    float* output_data = output.data();
     
-    // Copy each image into the batch
-    for (int i = 0; i < batch_size; ++i) {
-        const auto& img = images[i];
+    // Scale factors
+    float scale_y = static_cast<float>(height) / target_height;
+    float scale_x = static_cast<float>(width) / target_width;
+    
+    // Resize using bilinear interpolation
+    for (int c = 0; c < channels; ++c) {
+        const float* channel_input = input_data + c * height * width;
+        float* channel_output = output_data + c * target_height * target_width;
         
-        // Check shape
-        const auto& img_shape = img.shape();
-        if (img_shape[0] != channels || img_shape[1] != height || img_shape[2] != width) {
-            throw std::runtime_error("All images must have the same dimensions for batching");
+        for (int y = 0; y < target_height; ++y) {
+            for (int x = 0; x < target_width; ++x) {
+                float src_y = (y + 0.5f) * scale_y - 0.5f;
+                float src_x = (x + 0.5f) * scale_x - 0.5f;
+                
+                // Clamp coordinates
+                src_y = std::max(0.0f, std::min(src_y, static_cast<float>(height - 1)));
+                src_x = std::max(0.0f, std::min(src_x, static_cast<float>(width - 1)));
+                
+                // Bilinear interpolation
+                channel_output[y * target_width + x] = bilinear_interpolate(
+                    channel_input, height, width, src_y, src_x);
+            }
         }
-        
-        // Copy data (this is a simplified version, real implementation would use CUDA kernel)
-        // For each image in batch:
-        //   - Calculate offset in batch tensor
-        //   - Copy image data to this offset
     }
     
-    return batch;
+    // Move result to match original device type
+    if (image.device_type() == DeviceType::CUDA) {
+        output.to(DeviceType::CUDA);
+    }
+    
+    return output;
 }
 
-} // namespace cnn_cuda
+// Implement center_crop method
+Tensor ImageUtils::center_crop(const Tensor& image, int crop_width, int crop_height) {
+    const auto& shape = image.shape();
+    
+    if (shape.size() != 3) {
+        throw std::runtime_error("Expected 3D tensor for center crop");
+    }
+    
+    int channels = shape[0];
+    int height = shape[1];
+    int width = shape[2];
+    
+    if (crop_width > width || crop_height > height) {
+        throw std::runtime_error("Crop dimensions cannot be larger than image dimensions");
+    }
+    
+    // Calculate crop coordinates
+    int start_h = (height - crop_height) / 2;
+    int start_w = (width - crop_width) / 2;
+    
+    // Create a CPU tensor for the work
+    Tensor cpu_image = image;
+    if (image.device_type() == DeviceType::CUDA) {
+        cpu_image.to(DeviceType::CPU);
+    }
+    
+    // Create output tensor on CPU
+    Tensor output({channels, crop_height, crop_width}, nullptr, DeviceType::CPU);
+    
+    const float* input_data = cpu_image.data();
+    float* output_data = output.data();
+    
+    // Perform center crop
+    for (int c = 0; c < channels; ++c) {
+        for (int h = 0; h < crop_height; ++h) {
+            for (int w = 0; w < crop_width; ++w) {
+                int in_idx = c * height * width + (start_h + h) * width + (start_w + w);
+                int out_idx = c * crop_height * crop_width + h * crop_width + w;
+                output_data[out_idx] = input_data[in_idx];
+            }
+        }
+    }
+    
+    // Move result to match original device type
+    if (image.device_type() == DeviceType::CUDA) {
+        output.to(DeviceType::CUDA);
+    }
+    
+    return output;
+}

@@ -18,6 +18,9 @@ constexpr const char* VERSION = "0.1.0";
 // Initialize CUDA devices and memory pool
 bool init();
 
+// Check if CUDA is supported
+bool is_cuda_supported();
+
 // Clean up resources
 void shutdown();
 

@@ -21,6 +21,7 @@ cnn-cuda/
 │       └── image_utils.h
 ├── src/
 │   ├── tensor.cpp
+│   ├── cnn_cuda.cpp
 │   ├── layers/
 │   │   ├── conv_layer.cpp
 │   │   ├── pooling_layer.cpp
@@ -38,6 +39,7 @@ cnn-cuda/
 │       ├── tensor_ops.cu
 │       └── memory_ops.cu
 ├── examples/
+│   ├── main.cpp
 │   ├── image_classification.cpp
 │   └── CMakeLists.txt
 └── tests/

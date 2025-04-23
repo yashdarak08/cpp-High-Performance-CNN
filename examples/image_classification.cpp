@@ -96,9 +96,38 @@ private:
     }
     
     Tensor global_avg_pool(const Tensor& x) {
-        // Implementation of global average pooling
-        // Omitted for brevity
-        return x;  // Placeholder
+        // Get input shape
+        std::vector<int> shape = x.shape();
+        int batch_size = shape[0];
+        int channels = shape[1];
+        int height = shape[2];
+        int width = shape[3];
+        
+        // Create output tensor [batch_size, channels, 1, 1]
+        Tensor output({batch_size, channels, 1, 1});
+        
+        // Forward declaration of the global avg pool CUDA function
+        extern void launch_global_avg_pool(
+            const float* input,
+            float* output,
+            int batch_size,
+            int channels,
+            int height,
+            int width,
+            cudaStream_t stream);
+        
+        // Launch kernel
+        launch_global_avg_pool(
+            x.data(),
+            output.data(),
+            batch_size,
+            channels,
+            height,
+            width,
+            0 // Default stream
+        );
+        
+        return output;
     }
 };
 
@@ -141,6 +170,33 @@ int main(int argc, char** argv) {
         std::cerr << "Error: " << e.what() << std::endl;
         return -1;
         }
+
+        // Get top prediction
+        Tensor logits = predictions.reshape({batch_size, num_classes});
+
+        // Move to CPU for processing
+        logits.to(DeviceType::CPU);
+        float* logits_data = logits.data();
+
+        // Find the class with highest score
+        int top_class = 0;
+        float top_score = logits_data[0];
+
+        for (int i = 1; i < num_classes; ++i) {
+            if (logits_data[i] > top_score) {
+                top_score = logits_data[i];
+                top_class = i;
+            }
+        }
+
+        // Sample class names for demonstration (would be loaded from a file in practice)
+        std::vector<std::string> class_names = {
+            "airplane", "automobile", "bird", "cat", "deer",
+            "dog", "frog", "horse", "ship", "truck"
+        };
+
+        // Print result
+        std::cout << "Top prediction: " << class_names[top_class] << " with confidence " << top_score << std::endl;
 
         return 0;
         }
