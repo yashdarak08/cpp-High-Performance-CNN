@@ -61,7 +61,7 @@ public:
         // Classification head (1x1 convolution instead of FC layer)
         Tensor logits = fc_->forward(gap);
         
-        // Reshape to [batch_size, num_classes]
+        // Reshape to [batch_size, num_classes_]
         logits.reshape({batch_size, num_classes_, 1, 1});
         
         auto end = std::chrono::high_resolution_clock::now();
@@ -74,7 +74,13 @@ public:
     // Load weights for all layers
     void load_weights(const std::string& weights_file) {
         // Implementation to load weights from file
-        // Omitted for brevity
+        std::cout << "Loading weights from " << weights_file << std::endl;
+        // This is a placeholder. In a real implementation, this would load weights from a file.
+    }
+    
+    // Get the number of classes
+    int get_num_classes() const {
+        return num_classes_;
     }
     
 private:
@@ -161,17 +167,13 @@ int main(int argc, char** argv) {
         // Run inference
         Tensor predictions = model.forward(image);
 
-        // Get top prediction
-        // Implementation omitted for brevity
-
         std::cout << "Classification completed successfully" << std::endl;
-
-        } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return -1;
-        }
-
-        // Get top prediction
+        
+        // Process the predictions
+        int batch_size = 1;  // We know this is 1 from earlier
+        int num_classes = model.get_num_classes();
+        
+        // Get output tensor with proper shape for processing
         Tensor logits = predictions.reshape({batch_size, num_classes});
 
         // Move to CPU for processing
@@ -198,5 +200,10 @@ int main(int argc, char** argv) {
         // Print result
         std::cout << "Top prediction: " << class_names[top_class] << " with confidence " << top_score << std::endl;
 
-        return 0;
-        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return -1;
+    }
+
+    return 0;
+}

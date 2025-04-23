@@ -89,13 +89,19 @@ const Tensor& ConvLayer::get_bias() const {
     return bias_;
 }
 
+// Modify this method in src/layers/conv_layer.cpp
+
 ConvLayer::ConvImplementation ConvLayer::choose_implementation(const Tensor& input) const {
-    // Simple heuristic for choosing implementation
-    if (kernel_size_ == 3 && in_channels_ >= 16 && out_channels_ >= 16) {
+    // Winograd is optimal for 3x3 kernels with stride 1
+    if (kernel_size_ == 3 && stride_ == 1 && in_channels_ >= 16 && out_channels_ >= 16) {
         return ConvImplementation::WINOGRAD;
-    } else if (kernel_size_ > 5 || (in_channels_ >= 64 && out_channels_ >= 64)) {
+    } 
+    // Im2Col+GEMM is generally better for large channels or kernels
+    else if (kernel_size_ > 3 || (in_channels_ >= 64 && out_channels_ >= 64)) {
         return ConvImplementation::IM2COL_GEMM;
-    } else {
+    } 
+    // Direct convolution for small kernels and channel counts
+    else {
         return ConvImplementation::DIRECT;
     }
 }
@@ -195,10 +201,60 @@ Tensor ConvLayer::forward_im2col_gemm(const Tensor& input) {
     return output;
 }
 
+// Forward declaration of the Winograd CUDA kernel launcher
+void launch_winograd_conv2d(
+    const float* input,
+    const float* weights,
+    const float* bias,
+    float* output,
+    int batch_size,
+    int in_channels,
+    int out_channels,
+    int in_height,
+    int in_width,
+    int padding,
+    cudaStream_t stream);
+
 Tensor ConvLayer::forward_winograd(const Tensor& input) {
-    // Winograd implementation would go here
-    // For now, fall back to im2col_gemm
-    return forward_im2col_gemm(input);
+    // Input shape: [batch_size, in_channels, in_height, in_width]
+    const std::vector<int>& in_shape = input.shape();
+    
+    if (in_shape.size() != 4) {
+        throw std::runtime_error("Input must be 4D tensor [batch_size, channels, height, width]");
+    }
+    
+    // Check if this is a 3x3 kernel with stride 1, which is required for Winograd
+    if (kernel_size_ != 3 || stride_ != 1) {
+        return forward_im2col_gemm(input);
+    }
+    
+    int batch_size = in_shape[0];
+    int in_height = in_shape[2];
+    int in_width = in_shape[3];
+    
+    // Calculate output dimensions
+    int out_height = (in_height + 2 * padding_ - kernel_size_) / stride_ + 1;
+    int out_width = (in_width + 2 * padding_ - kernel_size_) / stride_ + 1;
+    
+    // Create output tensor
+    Tensor output({batch_size, out_channels_, out_height, out_width});
+    
+    // Launch Winograd convolution kernel
+    launch_winograd_conv2d(
+        input.data(),
+        weights_.data(),
+        bias_.data(),
+        output.data(),
+        batch_size,
+        in_channels_,
+        out_channels_,
+        in_height,
+        in_width,
+        padding_,
+        0 // Default stream
+    );
+    
+    return output;
 }
 
 } // namespace cnn_cuda

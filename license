@@ -1,0 +1,192 @@
+Now, let's add detailed documentation for the core classes in the form of expanded header comments. Here's an example for `include/tensor.h`:
+
+```cpp
+/**
+ * @file tensor.h
+ * @brief Core tensor class for CNN CUDA library
+ *
+ * This file contains the Tensor class, which is the fundamental data structure
+ * used throughout the CNN CUDA library. It provides memory management,
+ * device transfer capabilities, and basic tensor operations.
+ *
+ * @author Your Name
+ * @date 2023-04-23
+ */
+
+#pragma once
+
+#include <vector>
+#include <memory>
+#include <cassert>
+#include <cuda_runtime.h>
+
+namespace cnn_cuda {
+
+/**
+ * @enum DeviceType
+ * @brief Enumeration of supported compute devices
+ */
+enum class DeviceType {
+    CPU,    /**< Host CPU memory */
+    CUDA    /**< NVIDIA GPU CUDA device memory */
+};
+
+/**
+ * @class Tensor
+ * @brief Multi-dimensional array with automatic memory management and device transfer
+ *
+ * The Tensor class provides a flexible container for n-dimensional data that can
+ * reside on either CPU or GPU memory. It supports common tensor operations and
+ * provides seamless transfer between devices.
+ *
+ * Memory for the tensor is allocated from a global memory pool for efficiency and
+ * to reduce fragmentation.
+ */
+class Tensor {
+public:
+    /**
+     * @brief Default constructor
+     */
+    Tensor() = default;
+    
+    /**
+     * @brief Create tensor with specified dimensions
+     * @param shape Vector of dimensions (e.g., {batch_size, channels, height, width})
+     * @param device Device where the tensor should be allocated (CPU or CUDA)
+     */
+    Tensor(const std::vector<int>& shape, DeviceType device = DeviceType::CUDA);
+    
+    /**
+     * @brief Create tensor with data
+     * @param shape Vector of dimensions
+     * @param data Pointer to initial data
+     * @param device Device where the tensor should be allocated
+     *
+     * If the data pointer is not null, the tensor will be initialized with
+     * the provided data. The data is assumed to be in the host memory regardless
+     * of the target device type.
+     */
+    Tensor(const std::vector<int>& shape, const float* data, DeviceType device = DeviceType::CUDA);
+    
+    /**
+     * @brief Move data between devices
+     * @param device Target device (CPU or CUDA)
+     *
+     * Transfers the tensor data to the specified device. If the tensor is already
+     * on the target device, this operation is a no-op.
+     */
+    void to(DeviceType device);
+    
+    /**
+     * @brief Copy data from another tensor
+     * @param other Source tensor
+     *
+     * Copies data from the source tensor to this tensor. The tensors must have
+     * the same total number of elements, but the shapes can differ.
+     *
+     * @throws std::runtime_error If tensor sizes don't match
+     */
+    void copy_from(const Tensor& other);
+    
+    /**
+     * @brief Get raw pointer to tensor data
+     * @return Pointer to the underlying data
+     */
+    float* data();
+    
+    /**
+     * @brief Get const raw pointer to tensor data
+     * @return Const pointer to the underlying data
+     */
+    const float* data() const;
+    
+    /**
+     * @brief Get the tensor's shape
+     * @return Vector of dimensions
+     */
+    const std::vector<int>& shape() const;
+    
+    /**
+     * @brief Get a specific dimension size
+     * @param i Dimension index
+     * @return Size of the specified dimension
+     * @throws std::out_of_range If index is out of bounds
+     */
+    int dim(int i) const;
+    
+    /**
+     * @brief Get the total number of elements
+     * @return Total number of elements in the tensor
+     */
+    int size() const;
+    
+    /**
+     * @brief Reshape tensor (doesn't modify data)
+     * @param new_shape New dimensions
+     * @throws std::runtime_error If the new shape doesn't preserve total elements
+     *
+     * Changes the logical shape of the tensor without modifying the underlying data.
+     * The total number of elements must remain the same.
+     */
+    void reshape(const std::vector<int>& new_shape);
+    
+    /**
+     * @brief Get the current device type
+     * @return The device where the tensor data resides
+     */
+    DeviceType device_type() const { return device_; }
+    
+    /**
+     * @brief Destructor to properly free memory
+     *
+     * Returns the allocated memory to the memory pool.
+     */
+    ~Tensor();
+
+private:
+    std::vector<int> shape_;      /**< Shape of the tensor */
+    float* data_ptr_ = nullptr;   /**< Pointer to the data */
+    size_t size_ = 0;             /**< Total number of elements */
+    DeviceType device_ = DeviceType::CPU;  /**< Current device */
+    
+    /**
+     * @brief Allocate memory for the tensor
+     *
+     * Allocates memory from the memory pool based on the tensor's shape and device.
+     */
+    void allocate();
+    
+    /**
+     * @brief Free the tensor's memory
+     *
+     * Returns the allocated memory to the memory pool.
+     */
+    void free();
+};
+
+/**
+ * @brief Add two tensors element-wise
+ * @param a First tensor
+ * @param b Second tensor
+ * @param out Output tensor
+ * @throws std::runtime_error If tensor shapes don't match
+ */
+void tensor_add(const Tensor& a, const Tensor& b, Tensor& out);
+
+/**
+ * @brief Multiply two tensors element-wise
+ * @param a First tensor
+ * @param b Second tensor
+ * @param out Output tensor
+ * @throws std::runtime_error If tensor shapes don't match
+ */
+void tensor_mul(const Tensor& a, const Tensor& b, Tensor& out);
+
+/**
+ * @brief Apply ReLU activation function to a tensor
+ * @param input Input tensor
+ * @param output Output tensor
+ */
+void tensor_relu(const Tensor& input, Tensor& output);
+
+} // namespace cnn_cuda
